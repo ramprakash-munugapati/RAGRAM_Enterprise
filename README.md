@@ -83,13 +83,13 @@ graph TD
 
 ### Key flows
 
-1. **Ingestion** – `RealTimeSyncWorker` reads a `cdc_events` table (or a real stream) and calls `PostgresEngine.upsert_document` to keep the vector store up‑to‑date.  
-2. **Query routing** – `QueryRouter` calls the LLM (via `GenerationBackend`) to produce a `StructuredQuery` containing an `optimized_query` and `metadata_filters`.  
-3. **Search** – `PostgresEngine.search` uses the optimized query and filters to return the most similar documents.  
-4. **Grading** – `EnterpriseAgentWorkflow._grade_context` (or an external LLM) decides whether the retrieved context is sufficient.  
-5. **Synthesis** – If “Yes”, the `synthesizer` backend produces a final answer grounded only in the context; otherwise the loop rewrites the query and retries (up to `max_retries=3`).  
-6. **Retrievers** – LangChain and LlamaIndex wrappers expose the same `search` results in their respective formats, allowing you to plug RAGRAM into existing agent ecosystems.  
-7. **API exposure** – The FastAPI service (`examples/fastapi_app.py`) offers a `/query` endpoint that runs the whole loop and returns `{"answer": "...", "missing_info": "...", "retries": N}`.
+1. **Ingestion** – `RealTimeSyncWorker` polls a `cdc_events` table (or listens to a stream) and, for each new row, extracts the text, computes an embedding (hash‑based or via a model), and calls `PostgresEngine.upsert_document` to keep the vector store up‑to‑date without blocking primary traffic.  
+2. **Query routing** – `QueryRouter` forwards the user's free‑form question to an LLM via the `structured_output` prompt, which returns a JSON object containing `optimized_query` (a cleaned search string enriched with synonyms) and `metadata_filters` (key/value pairs that become SQL `WHERE` clauses such as `category`, `date`, `status`).  
+3. **Search** – `PostgresEngine.search` receives the `optimized_query` embedding and the `metadata_filters`, performs a cosine‑similarity search (fallback Python computation when pgvector is unavailable), and returns the top‑k most similar documents.  
+4. **Grading** – `EnterpriseAgentWorkflow._grade_context` (or an external LLM) compares the retrieved snippets against the user query; it returns **Yes** if enough relevant information is present, otherwise **No**.  
+5. **Synthesis** – If the grader says **Yes**, the `synthesizer` backend (OpenAI, Anthropic, or Ollama) produces a final answer using *only* the validated context snippets; if information is missing it explicitly lists what was not found. If the grader says **No**, the loop records the failure reason, appends “*broaden*” to the query, clears the metadata filters, and retries (up to `max_retries=3`).  
+6. **Retrievers** – The LangChain retriever (`RagramLangChainRetriever`) and the LlamaIndex retriever (`RagramLlamaIndexRetriever`) wrap the engine's `search` method and expose results in their respective formats (`Document` objects or `NodeWithScore`), allowing integration with respective agent frameworks.  
+7. **API exposure** – The FastAPI service (`examples/fastapi_app.py`) exposes a single POST `/query` endpoint; the request body contains `{ "question": "..." }` and the response is `{"answer": "...", "missing_info": "...", "retries": N}`.
 
 ---
 ## Installation
