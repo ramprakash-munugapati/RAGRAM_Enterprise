@@ -9,6 +9,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
+
+# ------------------------------------------------------------------
+# Load optional .env file (does nothing if python‑dotenv is not installed)
+# ------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()                  # reads .env in the current working directory
+except Exception:                  # pragma: no cover
+    pass                           # continue without .env – env vars may already exist
 from sqlalchemy import (
     create_engine,
     MetaData,
