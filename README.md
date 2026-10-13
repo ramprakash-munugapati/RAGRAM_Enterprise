@@ -53,7 +53,7 @@ graph TD
     subgraph "Query Processing"
         QR[QueryRouter]
         SQ[StructuredQuery]
-        LLM[LLM Backend<br/>(OpenAI / Anthropic / Ollama)]
+        LLM[LLM Backend(OpenAI / Anthropic / Ollama)]
     end
     subgraph "Agent Loop"
         AW[EnterpriseAgentWorkflow]
@@ -235,7 +235,7 @@ graph TD
     subgraph "Query Processing"
         QR[QueryRouter]
         SQ[StructuredQuery]
-        LLM[LLM Backend<br/>(OpenAI / Anthropic / Ollama)]
+        LLM[LLM Backend(OpenAI / Anthropic / Ollama)]
     end
     subgraph "Agent Loop"
         AW[EnterpriseAgentWorkflow]
