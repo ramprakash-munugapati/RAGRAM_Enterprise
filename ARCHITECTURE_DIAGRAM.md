@@ -1,81 +1,81 @@
 # RAGRAM Enterprise – Architecture and Request Flow
 
-The diagram is organized around the path a question follows through the service. The numbered steps show the normal request lifecycle; the other sections show background ingestion, optional framework integrations, and observability.
+This diagram reflects the current implementation in `RagramEnterpriseEngine.py` and `integrations.py`. It distinguishes the implemented core path from the optional FastAPI example and retriever adapters.
 
 ```mermaid
 flowchart TD
-    subgraph Request["A. User request (numbered flow)"]
+    subgraph Request["A. Core query flow"]
         direction TD
-        Client["1. Client submits a question"] --> API["2. FastAPI receives POST /query"]
-        API --> Router["3. QueryRouter builds an optimized query and metadata filters"]
-        Router --> Workflow["4. EnterpriseAgentWorkflow starts retrieval"]
-        Workflow --> Search["5. PostgresEngine embeds the query and searches"]
-        Search --> Documents[("Documents table")]
-        Documents --> Results["6. Ranked document chunks"]
-        Results --> Grade{"7. Is the retrieved context sufficient?"}
-        Grade -->|Yes| Synthesis["8. Synthesis LLM writes a grounded answer"]
-        Synthesis --> Response["9. API builds the response"]
-        Response --> Client
-        Grade -->|No| Retry{"Retry budget remains?"}
-        Retry -->|Yes| Rewrite["Rewrite query and broaden filters"]
-        Rewrite --> Search
-        Retry -->|No| Fallback["Return fallback: max retries exceeded"]
-        Fallback --> Response
+        ClientRequest["1. Caller submits a question"] --> Router["2. QueryRouter cleans the text and derives a basic category filter"]
+        Router --> Workflow["3. EnterpriseAgentWorkflow starts an attempt"]
+        Workflow --> Embed["4. Create deterministic hash-based query embedding"]
+        Embed --> Search["5. PostgresEngine.search filters documents and ranks by Python cosine similarity"]
+        Search --> Documents[("SQLAlchemy documents table")]
+        Documents --> Results["6. Ranked document rows"]
+        Results --> Grade{"7. Heuristic grader finds a query token in context?"}
+        Grade -->|Yes| Synthesis["8. Rule-based synthesizer extracts date information and missing fields"]
+        Synthesis --> Result["9. Workflow returns answer and missing_info"]
+        Result --> ClientResponse["10. Caller receives the workflow result"]
+        Grade -->|No| Retry{"Up to 3 retries remain after the initial attempt?"}
+        Retry -->|Yes| Rewrite["Append broaden marker to the query"]
+        Rewrite --> Router
+        Retry -->|No| Fallback["Return empty answer and max-retries message"]
+        Fallback --> Result
     end
 
-    subgraph Ingestion["B. Background document ingestion"]
+    subgraph Ingestion["B. Background ingestion"]
         direction LR
-        Source["Database changes or stream"] --> Worker["RealTimeSyncWorker polls or streams"]
-        Worker --> Tick["._tick() extracts text and creates embeddings"]
+        Events[("cdc_events table")] -->|polls| Worker["RealTimeSyncWorker"]
+        Worker --> Tick["._tick() extracts title or body and makes a hash embedding"]
         Tick --> Upsert["PostgresEngine.upsert_document"]
         Upsert --> Documents
     end
 
-    subgraph Integrations["C. Optional retriever integrations"]
+    subgraph Adapters["C. Optional framework adapters"]
         direction LR
-        Results --> LangChain["LangChain retriever"]
-        Results --> LlamaIndex["LlamaIndex retriever"]
-        LangChain --> FrameworkApps["Framework applications"]
-        LlamaIndex --> FrameworkApps
+        Engine["PostgresEngine.search"]
+        Engine --> LangChain["RagramLangChainRetriever"]
+        Engine --> LlamaIndex["RagramLlamaIndexRetriever"]
+        LangChain --> LCApp["LangChain application"]
+        LlamaIndex --> LIApp["LlamaIndex application"]
     end
 
-    subgraph Observability["D. Observability"]
+    subgraph HttpExample["D. Optional FastAPI example"]
         direction LR
-        MetricsCollector["MetricsCollector records counts and timings"]
-        Prometheus["Prometheus scraper"] -->|scrapes| MetricsEndpoint["GET /metrics"]
-        MetricsCollector --> MetricsEndpoint
+        HttpRequest["POST /query"] --> HttpWorkflow["Calls workflow.run(question)"]
+        HttpWorkflow --> Router
+        HttpResponse["Answer response model"]
     end
 
-    Config["EnterpriseConfig: database URL, embedding dimension, chunk size"] --> Search
+    Config["EnterpriseConfig: database URL, embedding dimension, chunk size, overlap"] --> Search
     Config --> Upsert
-    API -.->|request metrics| MetricsCollector
-    Workflow -.->|grade and retry metrics| MetricsCollector
+    ClientRequest -.-> HttpRequest
+    Result -.-> HttpResponse
 ```
 
 ### Legend
 
-- **Numbers 1–9** identify the normal request path from the client to the response.
-- **Solid arrows** show request, data, or control flow.
-- **Dotted arrows** show telemetry sent to the metrics collector.
-- **Cylinder** represents the shared documents store.
-- **Diamond** represents a decision; the `Yes` and `No` labels show which path is taken.
-- **Sections A–D** group request processing, background ingestion, optional integrations, and observability.
+- **Numbers 1–10** show the core query lifecycle. The optional HTTP example is shown separately so a response is not drawn back into the request node.
+- **Solid arrows** show data or control flow; **dotted arrows** show optional FastAPI entry/response mapping.
+- **Cylinder** represents a database table; the decision diamond shows the grader and retry branches.
+- The FastAPI block is an example entry point, not a dependency of the core workflow.
 
-### Follow the request
+### What the current code does
 
-1. The client sends a question to the FastAPI `POST /query` endpoint.
-2. The API passes the question to `QueryRouter`, which produces an optimized query and metadata filters.
-3. `EnterpriseAgentWorkflow` starts retrieval; `PostgresEngine` embeds the query and searches the documents table.
-4. The workflow grades the ranked chunks for relevance. If the context is insufficient, it rewrites the query and retries within the configured `max_retries=3` limit.
-5. If the context is sufficient, the synthesis LLM produces an answer grounded only in that context. If retries are exhausted, the workflow returns the fallback instead.
-6. The API returns the result. Request and workflow metrics are recorded and exposed for Prometheus to scrape.
+1. A caller invokes the query flow; the optional FastAPI example defines a `POST /query` route.
+2. `QueryRouter` uses a local heuristic to clean the question and derive a basic metadata filter. It does not call an LLM.
+3. `EnterpriseAgentWorkflow` hashes the routed query into a deterministic pseudo-embedding.
+4. `PostgresEngine.search` reads candidate rows, applies metadata filters, and ranks them with Python cosine-similarity calculations.
+5. A token-match heuristic grades the returned rows. On a failed grade, the workflow appends `*broaden*` and reruns routing. The loop allows an initial attempt plus up to three retries; on exhaustion, the returned `retries` value is actually the number of attempts.
+6. On a passing grade, the built-in synthesizer uses deterministic rules (including date extraction); it is not an LLM. Exhaustion returns an empty answer and a max-retries message with the attempt count.
+7. The optional LangChain and LlamaIndex adapters independently call engine search and convert results to their respective formats.
 
-### Supporting components
+### Implementation notes
 
-- **Ingestion:** The background sync worker polls or streams database changes, extracts text and creates embeddings, then upserts documents into the same store used for search.
-- **Framework integrations:** LangChain and LlamaIndex retrievers are optional adapters for applications using those frameworks.
-- **Configuration:** `EnterpriseConfig` supplies the database URL and embedding/chunk settings to the engine.
-- **Observability:** The metrics collector records counts and timings; Prometheus reads them from `GET /metrics`.
+- The worker currently polls the `cdc_events` table; a live change stream is not implemented.
+- `integrations.py` contains OpenAI, Anthropic, and Ollama backend classes, but the core router and workflow do not call them.
+- There is no metrics collector or Prometheus `/metrics` endpoint in the current code.
+- The FastAPI example contains a route definition, but its startup wiring has not been verified as runnable. Treat it as an example until its imports and workflow construction are brought in line with the current engine API.
 
 ---
 

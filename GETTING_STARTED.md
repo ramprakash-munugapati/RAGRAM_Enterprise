@@ -2,11 +2,11 @@
 
 This guide walks you through installing, configuring, and running the **RAGRAM Enterprise** demo.
 
-## 1. Install the package
+## 1. Install the dependencies
 
 ```bash
-# Core package (always needed)
-pip install -e .
+# Core dependencies
+pip install -r requirements.txt
 
 # Optional extras (choose what you need)
 #   LangChain support
@@ -35,10 +35,9 @@ OLLAMA_URL=http://localhost:11434          # optional, for local Ollama
 DB_URL=sqlite:///:memory:          # use a PostgreSQL URL for production
 
 # --- Backend selection ---
-# Controls which LLM backend the engine uses at runtime.
+# Selects the backend returned by load_backend(); the core CLI workflow
+# does not currently call this factory.
 # Accepted values: "openai", "anthropic", "ollama"
-# If omitted, the code falls back to "openai" when OPENAI_API_KEY is set,
-# otherwise "anthropic" when that key is set, otherwise "ollama".
 RAGMA_BACKEND=openai
 
 # --- Chunking parameters (must match the engine defaults) ---
@@ -65,7 +64,7 @@ export RAGMA_BACKEND=ollama
 python cli.py --seed --query "What were the sales figures for the Q3 period and can you tell me about any product launches that happened around the same time?"
 ```
 
-**Expected output (OpenAI example):**
+**Expected output (core demo; the configured LLM backend is not used by this workflow):**
 
 ```
 === User Query ===
@@ -81,13 +80,12 @@ did the board approve any budget changes in 2024?
 === Final Result ===
 {
   "answer": "The records concern the date 2024-09-01.",
-  "missing_info": null,
-  "retries": 1
+  "missing_info": null
 }
 [Engine] Demo completed.
 ```
 
-If the grader returns **“No”**, the loop automatically rewrites the query and retries (up to three times).
+If the grader returns **“No”**, the loop appends a `*broaden*` marker to the query and retries (up to three times after the initial attempt). The retry-exhaustion result reports an attempt count; successful results omit the `retries` key.
 
 ## 3. Using the LangChain / LlamaIndex retrievers
 

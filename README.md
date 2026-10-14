@@ -1,6 +1,6 @@
 # RAGRAM Enterprise
 
-**RAGRAM Enterprise** is an autonomous, production‑ready Advanced RAG system that hooks directly into a live, real‑time database (defaulting to PostgreSQL). It combines query translation, metadata routing, self‑correction feedback loops, and an integrated real‑time data‑ingestion sync worker to handle messy user queries and constant data drift.
+**RAGRAM Enterprise** is a demo/reference Advanced RAG engine built around SQLAlchemy storage, a CDC-table polling example, and a heuristic retrieve-grade-rewrite workflow. The current core uses deterministic pseudo-embeddings and rule-based synthesis; the optional LLM backends, HTTP example, and retriever adapters are separate integrations rather than a production-ready end-to-end deployment.
 
 ---
 ## Table of Contents
@@ -24,72 +24,31 @@ RAGRAM Enterprise implements the following core components:
 | Component | Description |
 |-----------|-------------|
 | **EnterpriseConfig** | Holds database URLs, embedding dimension, chunk‑size/overlap parameters. |
-| **PostgresEngine** | SQLAlchemy/psycopg3 driver with pgvector support – unified relational + vector storage (documents, embeddings, JSON‑B metadata). |
-| **RealTimeSyncWorker** | CDC‑style worker that polls a `cdc_events` table (or can be wired to a real stream) and automatically extracts text, computes embeddings, and upserts records without blocking primary traffic. |
-| **StructuredQuery (Pydantic)** | Forces the LLM to output JSON containing `optimized_query` (cleaned search string) and `metadata_filters` (key/value pairs for SQL WHERE clauses). |
-| **QueryRouter** | Translates raw human input → structured query → dynamic SQL executed against the `PostgresEngine`. |
-| **EnterpriseAgentWorkflow** | Autonomous “retrieve‑grade‑rewrite” loop with a strict `max_retries=3` counter. |
-| **Factual Synthesizer** | System‑prompted LLM that answers **only** from validated context and explicitly reports any missing data. |
+| **PostgresEngine** | SQLAlchemy document storage and metadata filtering, with query results ranked using Python cosine-similarity calculations. |
+| **RealTimeSyncWorker** | Demo worker that polls a `cdc_events` table, extracts a title or body, creates a deterministic hash-based pseudo-embedding, and upserts a document. |
+| **StructuredQuery** | Lightweight Python object holding an optimized query and metadata filters; it is not a Pydantic model and is currently populated by a local heuristic. |
+| **QueryRouter** | Cleans the raw query and derives a basic metadata filter using local heuristics; it does not call an LLM or generate SQL. |
+| **EnterpriseAgentWorkflow** | Heuristic retrieve-grade-rewrite loop with an initial attempt and up to three retries. |
+| **Factual Synthesizer** | Deterministic rule-based summary and missing-information reporting; the core workflow does not currently call an LLM. |
 
-The module is **stand‑alone**, **self‑contained**, and runs end‑to‑end via the `cli.py` entry point or the Python API.
+The engine can be invoked through `cli.py` or the Python API. See the implementation notes in the architecture section before relying on the optional integrations or HTTP example.
 
 ---
 ## Architecture
 
-The diagram below illustrates the data flow and the major subsystems.  All components communicate through well‑defined interfaces, making it easy to swap individual pieces (e.g., replace the LLM backend or the vector store) without touching the rest of the code.
-
-```mermaid
-graph TD
-    subgraph "Configuration"
-        C[EnterpriseConfig]
-    end
-    subgraph "Engine Layer"
-        DB[(SQLite / PostgreSQL)]
-        PG[PostgresEngine]
-    end
-    subgraph "Sync Worker"
-        SW[RealTimeSyncWorker]
-    end
-    subgraph "Query Processing"
-        QR[QueryRouter]
-        SQ[StructuredQuery]
-        LLM[LLM Backend]
-    end
-    subgraph "Agent Loop"
-        AW[EnterpriseAgentWorkflow]
-    end
-    subgraph "Retrievers"
-        LC[LangChain Retriever]
-        LI[LlamaIndex Retriever]
-    end
-    C --> PG
-    SW --> PG
-    PG --> QR
-    QR --> SQ
-    SQ --> LLM
-    LLM --> AW
-    AW --> LC
-    AW --> LI
-    style C fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style PG fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style SW fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style QR fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style SQ fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style LLM fill:#ffe6e6,stroke:#333,stroke-width:2px
-    style AW fill:#ffe6e6,stroke:#333,stroke-width:2px
-    style LC fill:#e0f7fa,stroke:#333,stroke-width:2px
-    style LI fill:#e0f7fa,stroke:#333,stroke-width:2px
-```
+See the [numbered architecture and request-flow diagram](./ARCHITECTURE_DIAGRAM.md) for the current implementation, including background ingestion, optional retriever adapters, retry behavior, and implementation limitations.
 
 ### Key flows
 
-1. **Ingestion** – `RealTimeSyncWorker` polls a `cdc_events` table (or listens to a stream) and, for each new row, extracts the text, computes an embedding (hash‑based or via a model), and calls `PostgresEngine.upsert_document` to keep the vector store up‑to‑date without blocking primary traffic.  
-2. **Query routing** – `QueryRouter` forwards the user's free‑form question to an LLM via the `structured_output` prompt, which returns a JSON object containing `optimized_query` (a cleaned search string enriched with synonyms) and `metadata_filters` (key/value pairs that become SQL `WHERE` clauses such as `category`, `date`, `status`).  
-3. **Search** – `PostgresEngine.search` receives the `optimized_query` embedding and the `metadata_filters`, performs a cosine‑similarity search (fallback Python computation when pgvector is unavailable), and returns the top‑k most similar documents.  
-4. **Grading** – `EnterpriseAgentWorkflow._grade_context` (or an external LLM) compares the retrieved snippets against the user query; it returns **Yes** if enough relevant information is present, otherwise **No**.  
-5. **Synthesis** – If the grader says **Yes**, the `synthesizer` backend (OpenAI, Anthropic, or Ollama) produces a final answer using *only* the validated context snippets; if information is missing it explicitly lists what was not found. If the grader says **No**, the loop records the failure reason, appends “*broaden*” to the query, clears the metadata filters, and retries (up to `max_retries=3`).  
-6. **Retrievers** – The LangChain retriever (`RagramLangChainRetriever`) and the LlamaIndex retriever (`RagramLlamaIndexRetriever`) wrap the engine's `search` method and expose results in their respective formats (`Document` objects or `NodeWithScore`), allowing integration with respective agent frameworks.  
-7. **API exposure** – The FastAPI service (`examples/fastapi_app.py`) exposes a single POST `/query` endpoint; the request body contains `{ "question": "..." }` and the response is `{"answer": "...", "missing_info": "...", "retries": N}`.
+1. **Ingestion** – `RealTimeSyncWorker` polls `cdc_events`, extracts a title or body, makes a deterministic hash embedding, and upserts the document.
+2. **Query routing** – `QueryRouter` uses a local heuristic to clean the query and derive a basic metadata filter; it does not call the generation backends.
+3. **Search** – `PostgresEngine.search` applies metadata filters and ranks stored embeddings with Python cosine-similarity calculations.
+4. **Grading and retry** – The workflow uses a token-match heuristic. A failed grade appends `*broaden*` to the query and repeats routing; the loop allows an initial attempt plus up to three retries.
+5. **Synthesis** – The core workflow uses deterministic rules to extract date information and report missing fields; it does not call an LLM backend.
+6. **Retriever adapters** – The optional LangChain and LlamaIndex wrappers independently call engine search and convert returned documents to their respective formats.
+7. **HTTP example** – `examples/fastapi_app.py` contains a `POST /query` route, but its startup wiring has not been verified as runnable against the current workflow API.
+
+The OpenAI, Anthropic, and Ollama backend classes in `integrations.py` are available separately, but are not connected to the core router or workflow. The repository does not currently implement a Prometheus metrics endpoint.
 
 ---
 ## Installation
@@ -145,13 +104,12 @@ did the board approve any budget changes in 2024?
 === Final Result ===
 {
   "answer": "The records concern the date 2024-09-01.",
-  "missing_info": null,
-  "retries": 1
+  "missing_info": null
 }
 [Engine] Demo completed.
 ```
 
-If the grader returns **“No”**, the loop automatically rewrites the query, loosens filters, and retries (up to three times) before reporting “Max retries exceeded”.
+If the grader returns **“No”**, the loop appends a `*broaden*` marker to the query and retries (up to three times after the initial attempt) before reporting “Max retries exceeded”.
 
 ---
 ## CLI Usage
@@ -215,63 +173,14 @@ The `run` method returns a dict with keys:
 
 * `answer` – the synthesized factual answer (or empty string if failed)
 * `missing_info` – `None` if the answer is complete, otherwise a semicolon‑separated list of missing pieces
-* `retries` – how many times the self‑correction loop executed (≤ 3)
+* `retries` – on retry exhaustion, the workflow currently reports the number of attempts (initial attempt plus up to three retries); successful results omit this key.
 
 ---
 ## Architecture (detail)
 
-```mermaid
-graph TD
-    subgraph "Configuration"
-        C[EnterpriseConfig]
-    end
-    subgraph "Engine Layer"
-        DB[(SQLite / PostgreSQL)]
-        PG[PostgresEngine]
-    end
-    subgraph "Sync Worker"
-        SW[RealTimeSyncWorker]
-    end
-    subgraph "Query Processing"
-        QR[QueryRouter]
-        SQ[StructuredQuery]
-        LLM[LLM Backend]
-    end
-    subgraph "Agent Loop"
-        AW[EnterpriseAgentWorkflow]
-    end
-    subgraph "Retrievers"
-        LC[LangChain Retriever]
-        LI[LlamaIndex Retriever]
-    end
-    C --> PG
-    SW --> PG
-    PG --> QR
-    QR --> SQ
-    SQ --> LLM
-    LLM --> AW
-    AW --> LC
-    AW --> LI
-    style C fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style PG fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style SW fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style QR fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style SQ fill:#e6f7ff,stroke:#333,stroke-width:2px
-    style LLM fill:#ffe6e6,stroke:#333,stroke-width:2px
-    style AW fill:#ffe6e6,stroke:#333,stroke-width:2px
-    style LC fill:#e0f7fa,stroke:#333,stroke-width:2px
-    style LI fill:#e0f7fa,stroke:#333,stroke-width:2px
-```
+See the [numbered architecture and request-flow diagram](./ARCHITECTURE_DIAGRAM.md). It documents the implemented core path and distinguishes it from optional adapters and examples.
 
-### Flow summary
-
-1. **Ingestion** – `RealTimeSyncWorker` → `PostgresEngine.upsert_document`.  
-2. **Query routing** – `QueryRouter` → LLM → `StructuredQuery`.  
-3. **Search** – `PostgresEngine.search` → top‑k documents.  
-4. **Grading** – `EnterpriseAgentWorkflow._grade_context`.  
-5. **Synthesis** – if “Yes”, `synthesizer` produces answer; else loop back.  
-6. **Retrievers** – LangChain / LlamaIndex wrappers expose the same docs.  
-7. **API** – FastAPI `/query` endpoint runs the whole loop.
+The current core flow uses heuristic routing and grading, hash-based pseudo-embeddings, Python cosine-similarity ranking, and deterministic answer summarization. The LLM backend classes in `integrations.py` are not wired into this workflow.
 
 ---
 ## Integration Guidelines
@@ -280,11 +189,11 @@ graph TD
 |------|---------------|
 | **LangChain retriever** | `from integrations import RagramLangChainRetriever; retriever = RagramLangChainRetriever(engine)` – used as any `langchain_core.retrievers.BaseRetriever`. |
 | **LlamaIndex retriever** | `from integrations import RagramLlamaIndexRetriever; retriever = RagramLlamaIndexRetriever(engine)` – returns `NodeWithScore` objects. |
-| **OpenAI generation** | Set `OPENAI_API_KEY` and `RAGMA_BACKEND=openai` in `.env`. The workflow will use `OpenAIGeneration` for structured output, grader, and synthesizer. |
-| **Anthropic generation** | Set `ANTHROPIC_API_KEY` and `RAGMA_BACKEND=anthropic`. |
-| **Ollama local LLM** | Ensure Ollama is running (`ollama serve`). No extra pip packages needed – the backend uses only `urllib.request`. Set `RAGMA_BACKEND=ollama` and `OLLAMA_URL=http://localhost:11434`. |
-| **FastAPI service** | Run `cd examples && uvicorn fastapi_app:app --reload`. POST `{"question": "your query"}` to `http://127.0.0.1:8000/query`. |
-| **Custom LLM backend** | Implement `GenerationBackend` (ABC) and register it in `load_backend()` or pass an instance directly to `EnterpriseAgentWorkflow`. |
+| **OpenAI generation** | `OpenAIGeneration` is available in `integrations.py`; setting its API key does not connect it to the core query workflow. |
+| **Anthropic generation** | `AnthropicGeneration` is available in `integrations.py`; it is not currently invoked by the core workflow. |
+| **Ollama local LLM** | `OllamaGeneration` is available in `integrations.py`; setting `RAGMA_BACKEND` alone does not connect it to the core workflow. |
+| **FastAPI example** | `examples/fastapi_app.py` defines `POST /query`, but its startup wiring is not compatible with the current workflow constructor and has not been verified as runnable. |
+| **Custom LLM backend** | Implement `GenerationBackend` and register it in `load_backend()`; the current `EnterpriseAgentWorkflow` does not accept a backend instance. |
 
 ---
 ## Configuration
