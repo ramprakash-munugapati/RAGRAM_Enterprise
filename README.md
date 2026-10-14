@@ -38,6 +38,11 @@ The engine can be invoked through `cli.py` or the Python API. See the implementa
 
 See the [numbered architecture and request-flow diagram](./ARCHITECTURE_DIAGRAM.md) for the current implementation, including background ingestion, optional retriever adapters, retry behavior, and implementation limitations.
 
+### Explore the repository
+
+- [View the repository with Gitingest](https://gitingest.com/ramprakash-munugapati/ragram_enterprise) for a text-oriented repository overview.
+- [View the architecture with GitDiagram](https://gitdiagram.com/ramprakash-munugapati/ragram_enterprise#architecture) for an interactive architecture visualization.
+
 ### Key flows
 
 1. **Ingestion** – `RealTimeSyncWorker` polls `cdc_events`, extracts a title or body, makes a deterministic hash embedding, and upserts the document.
