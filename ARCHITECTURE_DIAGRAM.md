@@ -2,61 +2,34 @@
 
 ```mermaid
 graph TD
-    %% -------------------------------------------------------------
-    
-    %% -------------------------------------------------------------
     subgraph Config ["Configuration"]
         C[EnterpriseConfig] -->|db_url, chunk params| PG[PostgresEngine]
     end
-
-    %% -------------------------------------------------------------
-    % 2. Core Engine (SQLite / PostgreSQL + pgvector)
-    %% -------------------------------------------------------------
     subgraph Engine ["PostgresEngine"]
         direction TB
         U[upsert_document] -->|text, metadata, embedding| DB[(documents table)]
         S[search] <-- embedding, filters --> DB
     end
-
-    %% -------------------------------------------------------------
-    % 3. Real‑time Sync Worker (CDC)
-    %% -------------------------------------------------------------
     subgraph Sync ["RealTimeSyncWorker"]
         direction TB
         P["Poll / Stream"] -->|new/updated rows| T[._tick()]
         T -->|extract text + embed| U
         U --> DB
     end
-
-    %% -------------------------------------------------------------
-    % 3. Query Routing (LLM‑driven)
-    %% -------------------------------------------------------------
     subgraph Routing ["QueryRouter"]
         direction TB
         R[raw user query] -->|structured_output| SQ[StructuredQuery {optimized_query, metadata_filters}]
         SQ -->|post‑processed| S[search query (embedding + filters)]
     end
-
-    %% -------------------------------------------------------------
-    % 3. Search & Retrieval
-    %% -------------------------------------------------------------
     subgraph Search ["PostgresEngine.search"]
         direction TB
         S -->|cosine similarity| D[documents]
         D -->|top‑k| Rets[Retriever outputs]
     end
-
-    %% -------------------------------------------------------------
-    % 4. Retrievers (LangChain / LlamaIndex)
-    %% -------------------------------------------------------------
     subgraph Retrievers ["Retrievers"]
         LC[LangChain Retriever] -->|get_relevant_documents| UserApp
         LI[LlamaIndex Retriever] -->|retrieve| UserApp
     end
-
-    %% -------------------------------------------------------------
-    % 5. Agentic Workflow (retrieve‑grade‑rewrite)
-    %% -------------------------------------------------------------
     subgraph Workflow ["EnterpriseAgentWorkflow"]
         direction TB
         A[retrieve] -->|grade| G[grader (Yes/No)]
@@ -65,36 +38,20 @@ graph TD
         R --> A
         W[max_retries=3] -->|exhausted| F[fallback: "max retries exceeded"]
     end
-
-    %% -------------------------------------------------------------
-    % 6. Factual Synthesizer (LLM)
-    %% -------------------------------------------------------------
     subgraph Synth ["Synthesis (LLM)"]
         direction TB
         A_out -->|generates answer only from context| Answer[final answer]
         Answer -->|missing_info| MI[missing_info text]
     end
-
-    %% -------------------------------------------------------------
-    % 7. API Exposure (FastAPI)
-    %% -------------------------------------------------------------
     subgraph API ["FastAPI Service"]
         direction TB
         Endp[POST /query] -->|question| Wkfl[workflow.run]
         Wkfl -->|JSON answer| Resp[Response model]
     end
-
-    %% -------------------------------------------------------------
-    % 8. Observability (Prometheus)
-    %% -------------------------------------------------------------
     subgraph Metrics ["Prometheus Metrics"]
         direction TB
         MetricsCollector["MetricsCollector"] -->|increment / record| HTTP[/metrics endpoint]
     end
-
-    %% -------------------------------------------------------------
-    % 9. Connections between subsystems
-    %% -------------------------------------------------------------
     C --> PG
     PG --> Sync
     PG --> Routing
@@ -123,7 +80,7 @@ graph TD
 8. **Synthesis** uses an LLM to produce a factual answer grounded *only* in the validated context; it also reports missing information.
 9. **API** exposes the whole flow via a simple POST endpoint; Prometheus metrics can be attached for observability.
 
---- liên kết (link) về cách các thành phần tương tác với nhau: 
+--- liên kết (link) về cách các thành phần tương tác với nhau:
 - Cấu hình → Engine → Worker → Routing → Search → Retrievers → Workflow → Synthesizer → API → Metrics.
 
 ---
