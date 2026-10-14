@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  # FastAPI service
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - DB_URL=${DB_URL}
+      - RAGMA_BACKEND=${RAGMA_BACKEND}
+      - CHUNK_SIZE=${CHUNK_SIZE}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP}
