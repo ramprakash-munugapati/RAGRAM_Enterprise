@@ -3,7 +3,7 @@
 ```mermaid
 graph TD
     %% -------------------------------------------------------------
-    % 1. Configuration & Initialisation
+    
     %% -------------------------------------------------------------
     subgraph Config ["Configuration"]
         C[EnterpriseConfig] -->|db_url, chunk params| PG[PostgresEngine]
