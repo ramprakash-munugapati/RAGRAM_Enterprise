@@ -1,87 +1,82 @@
-# RAGRAM Enterprise – Architecture Diagram (deep dive)
+# RAGRAM Enterprise – Architecture and Request Flow
+
+The diagram is organized around the path a question follows through the service. The numbered steps show the normal request lifecycle; the other sections show background ingestion, optional framework integrations, and observability.
 
 ```mermaid
-graph TD
-    subgraph Config ["Configuration"]
-        C[EnterpriseConfig] -->|db_url, chunk params| PG[PostgresEngine]
+flowchart TD
+    subgraph Request["A. User request (numbered flow)"]
+        direction TD
+        Client["1. Client submits a question"] --> API["2. FastAPI receives POST /query"]
+        API --> Router["3. QueryRouter builds an optimized query and metadata filters"]
+        Router --> Workflow["4. EnterpriseAgentWorkflow starts retrieval"]
+        Workflow --> Search["5. PostgresEngine embeds the query and searches"]
+        Search --> Documents[("Documents table")]
+        Documents --> Results["6. Ranked document chunks"]
+        Results --> Grade{"7. Is the retrieved context sufficient?"}
+        Grade -->|Yes| Synthesis["8. Synthesis LLM writes a grounded answer"]
+        Synthesis --> Response["9. API builds the response"]
+        Response --> Client
+        Grade -->|No| Retry{"Retry budget remains?"}
+        Retry -->|Yes| Rewrite["Rewrite query and broaden filters"]
+        Rewrite --> Search
+        Retry -->|No| Fallback["Return fallback: max retries exceeded"]
+        Fallback --> Response
     end
-    subgraph Engine ["PostgresEngine"]
-        direction TB
-        U[upsert_document] -->|text, metadata, embedding| DB[(documents table)]
-        S[search] <-- embedding, filters --> DB
+
+    subgraph Ingestion["B. Background document ingestion"]
+        direction LR
+        Source["Database changes or stream"] --> Worker["RealTimeSyncWorker polls or streams"]
+        Worker --> Tick["._tick() extracts text and creates embeddings"]
+        Tick --> Upsert["PostgresEngine.upsert_document"]
+        Upsert --> Documents
     end
-    subgraph Sync ["RealTimeSyncWorker"]
-        direction TB
-        P["Poll / Stream"] -->|new/updated rows| T[._tick()]
-        T -->|extract text + embed| U
-        U --> DB
+
+    subgraph Integrations["C. Optional retriever integrations"]
+        direction LR
+        Results --> LangChain["LangChain retriever"]
+        Results --> LlamaIndex["LlamaIndex retriever"]
+        LangChain --> FrameworkApps["Framework applications"]
+        LlamaIndex --> FrameworkApps
     end
-    subgraph Routing ["QueryRouter"]
-        direction TB
-        R[raw user query] -->|structured_output| SQ[StructuredQuery {optimized_query, metadata_filters}]
-        SQ -->|post‑processed| S[search query (embedding + filters)]
+
+    subgraph Observability["D. Observability"]
+        direction LR
+        MetricsCollector["MetricsCollector records counts and timings"]
+        Prometheus["Prometheus scraper"] -->|scrapes| MetricsEndpoint["GET /metrics"]
+        MetricsCollector --> MetricsEndpoint
     end
-    subgraph Search ["PostgresEngine.search"]
-        direction TB
-        S -->|cosine similarity| D[documents]
-        D -->|top‑k| Rets[Retriever outputs]
-    end
-    subgraph Retrievers ["Retrievers"]
-        LC[LangChain Retriever] -->|get_relevant_documents| UserApp
-        LI[LlamaIndex Retriever] -->|retrieve| UserApp
-    end
-    subgraph Workflow ["EnterpriseAgentWorkflow"]
-        direction TB
-        A[retrieve] -->|grade| G[grader (Yes/No)]
-        G -- Yes --> S[​synthesize answer] --> A_out[answer]
-        G -- No --> R[rewrite query + broaden filters] --> A
-        R --> A
-        W[max_retries=3] -->|exhausted| F[fallback: "max retries exceeded"]
-    end
-    subgraph Synth ["Synthesis (LLM)"]
-        direction TB
-        A_out -->|generates answer only from context| Answer[final answer]
-        Answer -->|missing_info| MI[missing_info text]
-    end
-    subgraph API ["FastAPI Service"]
-        direction TB
-        Endp[POST /query] -->|question| Wkfl[workflow.run]
-        Wkfl -->|JSON answer| Resp[Response model]
-    end
-    subgraph Metrics ["Prometheus Metrics"]
-        direction TB
-        MetricsCollector["MetricsCollector"] -->|increment / record| HTTP[/metrics endpoint]
-    end
-    C --> PG
-    PG --> Sync
-    PG --> Routing
-    Routing --> Search
-    Search --> Retrievers
-    Retrievers --> Workflow
-    Workflow --> Synth
-    Synth --> API
-    API --> Metrics
+
+    Config["EnterpriseConfig: database URL, embedding dimension, chunk size"] --> Search
+    Config --> Upsert
+    API -.->|request metrics| MetricsCollector
+    Workflow -.->|grade and retry metrics| MetricsCollector
 ```
 
 ### Legend
-- **Boxes** – major subsystems.
-- **Arrows** – direction of data / control flow.
-- **Sub‑graphs** – group related components for readability.
-- **Legend** – explains the symbols used.
 
-### How to read the diagram
-1. **Configuration → Engine** supplies the database URL, embedding dimension, and chunk size.
-2. **Engine** stores documents (text + vector) and answers similarity searches.
-3. **Sync Worker** keeps the vector store up‑to‑date by reading CDC events.
-4. **Query Routing** turns a free‑form question into a structured query + filters via an LLM.
-5. **Search** converts the optimized query into a vector and pulls the most relevant docs.
-6. **Retrievers** expose those docs to LangChain or LlamaIndex agents.
-7. **Workflow** orchestrates the retrieve‑grade‑rewrite loop with a hard `max_retries=3` limit.
-8. **Synthesis** uses an LLM to produce a factual answer grounded *only* in the validated context; it also reports missing information.
-9. **API** exposes the whole flow via a simple POST endpoint; Prometheus metrics can be attached for observability.
+- **Numbers 1–9** identify the normal request path from the client to the response.
+- **Solid arrows** show request, data, or control flow.
+- **Dotted arrows** show telemetry sent to the metrics collector.
+- **Cylinder** represents the shared documents store.
+- **Diamond** represents a decision; the `Yes` and `No` labels show which path is taken.
+- **Sections A–D** group request processing, background ingestion, optional integrations, and observability.
 
---- liên kết (link) về cách các thành phần tương tác với nhau:
-- Cấu hình → Engine → Worker → Routing → Search → Retrievers → Workflow → Synthesizer → API → Metrics.
+### Follow the request
+
+1. The client sends a question to the FastAPI `POST /query` endpoint.
+2. The API passes the question to `QueryRouter`, which produces an optimized query and metadata filters.
+3. `EnterpriseAgentWorkflow` starts retrieval; `PostgresEngine` embeds the query and searches the documents table.
+4. The workflow grades the ranked chunks for relevance. If the context is insufficient, it rewrites the query and retries within the configured `max_retries=3` limit.
+5. If the context is sufficient, the synthesis LLM produces an answer grounded only in that context. If retries are exhausted, the workflow returns the fallback instead.
+6. The API returns the result. Request and workflow metrics are recorded and exposed for Prometheus to scrape.
+
+### Supporting components
+
+- **Ingestion:** The background sync worker polls or streams database changes, extracts text and creates embeddings, then upserts documents into the same store used for search.
+- **Framework integrations:** LangChain and LlamaIndex retrievers are optional adapters for applications using those frameworks.
+- **Configuration:** `EnterpriseConfig` supplies the database URL and embedding/chunk settings to the engine.
+- **Observability:** The metrics collector records counts and timings; Prometheus reads them from `GET /metrics`.
 
 ---
-*Diagram generated with Mermaid; renderable in GitHub Markdown, VS Code, and many Markdown editors.*
+
+*Mermaid diagram; renderable in GitHub Markdown, VS Code, and compatible Markdown editors.*
